@@ -1,0 +1,564 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Libraries need
+```{r}
+library(tidyverse)  # data manipulation
+library(cluster)    # clustering algorithms
+library(factoextra) # clustering algorithms & visualization
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(knitr)
+library(leaflet)
+library(caret)
+library(flexclust)
+library(corrplot)
+library(geosphere)
+library(NbClust)
+library(dbplyr)
+```
+
+```{r}
+getwd()
+```
+
+```{r}
+# reading the test and train data
+trainData <- read.csv("train_data.csv", header = TRUE, sep = ",")
+summary(trainData)
+cat("\n")
+testData <- read.csv("test_data.csv", header = TRUE, sep = ",")
+summary(testData)
+print('Done loading data')
+```
+
+
+```{r}
+# Checking if nan values are present in the dataset
+any(is.na(trainData))
+```
+
+```{r}
+# used for omitting the nan values from the data
+trainData <- na.omit(trainData)
+```
+
+```{r}
+table(trainData['passenger_count'])
+```
+
+```{r}
+# remove the passenger_count=0
+trainData = trainData[trainData$passenger_count != 0, ]
+```
+
+```{r}
+table(trainData['passenger_count'])
+```
+
+```{r}
+ggplot(trainData, aes(fare_amount))+
+  geom_histogram(fill = "blue", bins = 50)+
+  ggtitle("Distribution of Fare Amount")+
+  theme(plot.title = element_text(hjust = .5),)
+```
+
+# Adding features
+```{r}
+# function to get distance between points
+distance = function(lat1, long1, lat2, long2) {
+    deglen = 110.25
+    x = lat1 - lat2
+    y = (long1 - long2) * cos(lat1)
+    return(deglen * sqrt(x * x + y * y))
+}
+```
+
+
+
+```{r}
+print("Add distance to trainData data")
+trainData$distance = distance(trainData$pickup_latitude, trainData$pickup_longitude, 
+    trainData$dropoff_latitude, trainData$dropoff_longitude)
+cat("\n")
+print("Add distance to testData data")
+testData$distance = distance(testData$pickup_latitude, testData$pickup_longitude, 
+    testData$dropoff_latitude, testData$dropoff_longitude)
+
+```
+
+
+```{r}
+# Add hour of pickup
+print("Add hour feature to trainData data")
+# To train data
+t.lub.train <- ymd_hms(trainData$pickup_datetime)
+trainData$pickup_hour <- as.numeric(format(t.lub.train, "%H")) + as.numeric(format(t.lub.train, "%M"))/60
+
+cat("\n")
+print("Add hour feature to testData data")
+# To test data
+t.lub.test <- ymd_hms(testData$pickup_datetime)
+testData$pickup_hour <- as.numeric(format(t.lub.test, "%H")) + as.numeric(format(t.lub.test, "%M"))/60
+```
+
+```{r}
+# Add month
+print("Add month feature to test and train data")
+trainData$month <- as.factor(format(t.lub.train, "%m"))
+testData$month <- as.factor(format(t.lub.test, "%m"))
+```
+
+
+```{r}
+head(trainData)
+```
+
+# Checking for outliers
+
+```{r}
+hist(trainData$distance,main = 'Distance (km)',breaks=c(0,5,10,15,20,25,30,35,500000),xlim=c(0,40))
+```
+
+```{r}
+boxplot(trainData$distance,main = 'Distance (km)',ylim=c(0,20))
+```
+
+
+# From the graph, removing the outliers any items with distance > 20 km, and also distance of 0 km.
+```{r}
+trainData = trainData[trainData$distance != 0, ]
+
+trainData = trainData[trainData$distance < 20, ]
+```
+
+
+# Leaflet Sample Display
+
+```{r}
+# A map view of 1000 random Pickup locations using leaflet is shown below:
+sample_data = trainData[sample(1:dim(trainData)[1],1000),]
+
+leaflet() %>%
+  addTiles() %>%  # Add default OpenStreetMap map tiles
+  addAwesomeMarkers(
+    lng=sample_data$pickup_longitude, 
+    lat=sample_data$pickup_latitude,
+    clusterOptions = markerClusterOptions()
+    
+  )
+```
+
+
+```{r}
+# Map view of corresponding drop off locations using leaflet
+leaflet() %>%
+  addTiles() %>%  # Add default OpenStreetMap map tiles
+  addAwesomeMarkers(
+    lng=sample_data$dropoff_longitude, 
+    lat=sample_data$dropoff_latitude,
+    clusterOptions = markerClusterOptions()
+  )
+```
+
+
+# Clustering
+
+```{r}
+# Define number of clusters
+cen = 10
+
+pickup = rbind(cbind(trainData$pickup_longitude,trainData$pickup_latitude),cbind(testData$pickup_longitude,testData$pickup_latitude))
+clus_pickup = kmeans(pickup, centers = cen, nstart = 1)
+```
+
+
+```{r}
+# adding feature pickupcluster and dropoffcluster to the dataset
+trainData$pickupclus = as.factor(clus_pickup$cluster[1:dim(trainData)[1]])
+testData$pickupclus = as.factor(clus_pickup$cluster[(dim(trainData)[1]+1):length(clus_pickup$cluster)])
+
+
+# cluster locations for dropoff
+
+dropoff = rbind(cbind(trainData$dropoff_longitude,trainData$dropoff_latitude),cbind(testData$dropoff_longitude,testData$dropoff_latitude))
+clus_dropoff = kmeans(dropoff, centers = cen, nstart = 1)
+
+trainData$dropoffclus = as.factor(clus_dropoff$cluster[1:dim(trainData)[1]])
+testData$dropoffclus = as.factor(clus_dropoff$cluster[(dim(trainData)[1]+1):length(clus_dropoff$cluster)])
+```
+
+
+```{r}
+sample_data = trainData[sample(1:dim(trainData)[1],100000),]
+
+ggplot(mapping=aes(x=sample_data$pickup_longitude,y=sample_data$pickup_latitude))+
+  geom_point(alpha=.2,cex=0.0001,aes(colour=sample_data$pickupclus))+
+  scale_x_continuous(limits = c(-74.02,-73.85))+
+  scale_y_continuous(limits = c(40.7,40.85))+
+  ggtitle('Pick up locations clustered')+
+  guides(fill=F)+
+  xlab('Longitude')+ylab('Latitude')+ggtitle('Plot of pick up locations with clustering')+
+  theme(legend.position = 'none')
+```
+
+
+
+```{r}
+# dropoff location by cluster----
+  ggplot(mapping=aes(x=sample_data$dropoff_longitude,y=sample_data$dropoff_latitude))+
+    geom_point(alpha=.2,cex=0.0001,aes(colour=sample_data$dropoffclus))+
+    scale_x_continuous(limits = c(-74.02,-73.85))+
+    scale_y_continuous(limits = c(40.7,40.85))+
+  ggtitle('Drop off locations clustered')+
+  theme(legend.position = 'none')+
+  xlab('Longitude')+ylab('Latitude')+ggtitle('Plot of drop off locations with clustering')
+```
+
+
+```{r}
+summary(trainData)
+```
+
+
+# Correlation plot
+
+# getting subset of the dataframe
+```{r}
+df <- trainData[,c("fare_amount","pickup_longitude","pickup_latitude", "dropoff_longitude","dropoff_latitude","passenger_count", "distance")] 
+```
+
+
+```{r}
+# TO plotcorrelations between predictors
+predictorCorr = cor(df[,-1])
+corrplot(predictorCorr, method = "number")
+```
+
+# positive or negative correlation which over estimates or under estimates in linear regression
+
+```{r}
+# Pearson correlation between 2 variables
+cor(df$fare_amount, df$distance)
+```
+
+
+```{r}
+# correlation between 2 variables
+cor(df$fare_amount, df$passenger_count)
+```
+
+```{r}
+# correlation for all variables
+round(cor(df),
+  digits = 2 # rounded to 2 decimals
+)
+```
+
+
+
+
+# Converting character into datatime
+```{r}
+testData$pickup_datetime <- ymd_hms(testData$pickup_datetime)
+```
+
+
+```{r}
+testData$key <- ymd_hms(testData$key)
+```
+
+
+# getting subset of the dataframe
+```{r}
+testdf <- testData[,c("pickup_longitude","pickup_latitude", "dropoff_longitude","dropoff_latitude","passenger_count", "distance")] 
+print(testdf)
+```
+
+```{r}
+# k-means with 2 clusters
+k2 <- kmeans(df, centers = 2, nstart = 1)
+str(k2)
+```
+
+```{r}
+summary(df)
+```
+
+
+```{r}
+k3 <- kmeans(df, centers = 3, nstart = 25)
+k4 <- kmeans(df, centers = 4, nstart = 25)
+k5 <- kmeans(df, centers = 5, nstart = 25)
+
+# plots to compare
+p1 <- fviz_cluster(k2, geom = "point", data = df) + ggtitle("k = 2")
+p2 <- fviz_cluster(k3, geom = "point",  data = df) + ggtitle("k = 3")
+p3 <- fviz_cluster(k4, geom = "point",  data = df) + ggtitle("k = 4")
+p4 <- fviz_cluster(k5, geom = "point",  data = df) + ggtitle("k = 5")
+
+library(gridExtra)
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+```
+
+```{r}
+k6 <- kmeans(df, centers = 6, nstart = 25)
+k7 <- kmeans(df, centers = 7, nstart = 25)
+
+p5 <- fviz_cluster(k6, geom = "point",  data = df) + ggtitle("k = 6")
+p6 <- fviz_cluster(k7, geom = "point",  data = df) + ggtitle("k = 7")
+
+grid.arrange(p5, p6, nrow = 2)
+```
+
+
+```{r}
+# Elbow method
+set.seed(123)
+
+# function to compute total within-cluster sum of square 
+wss <- function(k) {
+  kmeans(df, k, nstart = 10 )$tot.withinss
+}
+
+# Compute and plot wss for k = 1 to k = 15
+k.values <- 1:15
+
+# extract wss for 2-15 clusters
+wss_values <- map_dbl(k.values, wss)
+
+plot(k.values, wss_values,
+       type="b", pch = 15, frame = FALSE, 
+       xlab="Number of clusters K",
+       ylab="Total within-clusters sum of squares")
+```
+
+
+# Considering Prime locations from the dataset
+
+```{r}
+trainData<-trainData%>%  
+  filter(pickup_longitude > -80 & pickup_longitude < -70) %>%
+  filter(pickup_latitude > 35 & pickup_latitude < 45) %>%
+  filter(dropoff_longitude > -80 & dropoff_longitude < -70) %>%
+  filter(dropoff_latitude > 35 & dropoff_latitude < 45)
+```
+
+```{r}
+traindf1 <- trainData[,c("key","fare_amount","pickup_datetime","pickup_longitude","pickup_latitude", "dropoff_longitude","dropoff_latitude","passenger_count", "distance")] 
+print(traindf1)
+```
+
+
+
+```{r}
+testdf1 <- testData[,c("key","pickup_datetime","pickup_longitude","pickup_latitude", "dropoff_longitude","dropoff_latitude","passenger_count", "distance")] 
+print(testdf1)
+```
+
+
+```{r}
+testData$fare_amount<-NA
+key<-testdf1$key
+testdf1<-testdf1%>%
+  select(-key)
+```
+
+
+```{r}
+all<-data.frame(rbind(trainData, testData))
+
+
+all<-all%>%
+  mutate(
+    pickup_datetime = ymd_hms(pickup_datetime),
+    year = as.factor(year(pickup_datetime)),
+    month = as.factor(month(pickup_datetime)),
+    day = as.numeric(day(pickup_datetime)),
+    dayOfWeek = as.factor(wday(pickup_datetime)),
+    hour = as.numeric(hour(pickup_datetime)),
+    #minute = as.numeric(minute(pickup_datetime)),
+    #quarter = as.factor(quarter(pickup_datetime)),
+    timeOfDay = as.factor(ifelse(hour >= 3 & hour < 9,
+                    "Morning", ifelse(hour >= 9 & hour < 14, "Mid-Day",
+                        ifelse(hour >= 14 & hour < 18, "Evening", "Night"))))
+  )%>%
+  select(-pickup_datetime)
+```
+
+
+```{r}
+#jfk
+jfk_lat<-40.6413
+jfk_long<--73.7781
+jfk<-c(jfk_long, jfk_lat)
+#newark
+nwk_lat<-40.6895
+nwk_long<--74.1745
+nwk<-c(nwk_long, nwk_lat)
+#laguardia
+lag_lat<-40.779
+lag_long<--73.8740
+lag<-c(lag_long, lag_lat)
+#MSG
+msg_lat<-40.7505
+msg_long<--73.9934
+msg<-c(msg_long, msg_lat)
+#times square
+ts_lat<-40.7589
+ts_long<--73.9851
+ts<-c(ts_long, ts_lat)
+#freedom tower
+freedom_lat<-40.7127
+freedom_long<--74.0134
+freedom<-c(freedom_long, freedom_lat)
+#empire state building
+esb_lat<-40.7484
+esb_long<--73.9857
+esb<-c(esb_long, esb_lat)
+#grand central
+grand_lat<-40.7527
+grand_long<--73.9772
+grand<-c(grand_long, grand_lat)
+#bronx
+bronx_lat <- (40.837048 * pi)/180
+bronx_long <- (-73.865433 * pi)/180
+bronx<-c(bronx_long, bronx_lat)
+nyc<-c(-74.0063889, 40.7141667)
+
+
+
+all<-all%>%
+  mutate(
+    dist = distHaversine(cbind(pickup_longitude, pickup_latitude), cbind(dropoff_longitude, dropoff_latitude), r = 6371),
+    to_jfk = distHaversine(cbind(pickup_longitude, pickup_latitude), jfk, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), jfk, r = 6371),
+    to_nkw = distHaversine(cbind(pickup_longitude, pickup_latitude), nwk, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), nwk, r = 6371),
+    to_lag = distHaversine(cbind(pickup_longitude, pickup_latitude), lag, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), lag, r = 6371),
+    to_msg = distHaversine(cbind(pickup_longitude, pickup_latitude), msg, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), msg, r = 6371),
+    to_ts = distHaversine(cbind(pickup_longitude, pickup_latitude), ts, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), ts, r = 6371),
+    to_freedom = distHaversine(cbind(pickup_longitude, pickup_latitude), freedom, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), freedom, r = 6371),
+  
+    to_grand = distHaversine(cbind(pickup_longitude, pickup_latitude), grand, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), grand, r = 6371),
+    to_bronx = distHaversine(cbind(pickup_longitude, pickup_latitude), bronx, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), bronx, r = 6371),
+    to_nyc = distHaversine(cbind(pickup_longitude, pickup_latitude), nyc, r = 6371) + distHaversine(cbind(dropoff_longitude, dropoff_latitude), nyc, r = 6371)
+    
+    
+  )
+```
+
+
+```{r}
+#Separate train from validation
+set.seed(0)
+size = floor(.8*nrow(na.omit(all)))
+
+ii<-sample(1:nrow(na.omit(all)), size)
+train<-na.omit(all)[ii,]
+valid<-na.omit(all)[-ii,]
+
+#train$pickup_datetime <- ymd_hms(train$pickup_datetime)
+train$key <- ymd_hms(train$key)
+
+
+dist_var<-grep("to_", colnames(train))
+dist_df<-train[,dist_var]
+print(train)
+```
+
+```{r}
+train <- train[,c("pickup_longitude","pickup_latitude", "dropoff_longitude","dropoff_latitude","passenger_count")]
+print(train)
+```
+
+```{r}
+#correlation with target (spearman)
+correlations_target<-cor(train[,1], dist_df, method = "spearman")
+correlations_target
+```
+
+
+```{r}
+correlations_dist<-cor(dist_df, method = "spearman")
+corrplot::corrplot(correlations_dist, type = "upper")
+```
+
+```{r}
+pcaObject<-prcomp(dist_df, center = TRUE, scale. = TRUE)
+
+
+fviz_screeplot(pcaObject)
+```
+
+```{r}
+a1<-fviz_contrib(pcaObject, choice = "var", axes = 1)
+b1<-fviz_contrib(pcaObject, choice = "var", axes = 2)
+c1<-fviz_contrib(pcaObject, choice = "var", axes = 3)
+d1<-fviz_contrib(pcaObject, choice = "var", axes = 4)
+
+a2<-fviz_cos2(pcaObject, choice = "var", axes = 1)
+b2<-fviz_cos2(pcaObject, choice = "var", axes = 2)
+c2<-fviz_cos2(pcaObject, choice = "var", axes = 3)
+d2<-fviz_cos2(pcaObject, choice = "var", axes = 4)
+
+gridExtra::grid.arrange(a1,a2)
+```
+
+```{r}
+gridExtra::grid.arrange(b1,b2)
+```
+
+```{r}
+gridExtra::grid.arrange(c1,c2)
+```
+
+```{r}
+gridExtra::grid.arrange(d1,d2)
+```
+
+# getting subset of the dataframe
+```{r}
+df <- traindf1[,c("fare_amount","pickup_longitude","pickup_latitude", "dropoff_longitude","dropoff_latitude","passenger_count", "distance")] 
+```
+
+# Linear model
+```{r}
+# Linear model
+triplinearModel = lm(fare_amount~., data = df)
+```
+
+
+# Calculating the training MSE/RMSE and R-square
+
+```{r}
+trainmse = mean((df$fare_amount - triplinearModel$fitted.values)^2)
+
+# Results
+cat("Train MSE: ", trainmse)
+cat("\n")
+cat("Train RMSE: ", sqrt(trainmse))
+cat("\n")
+cat("Train R-squared: ",summary(triplinearModel)$r.sq)
+```
+
+
+
+```{r}
+# Resulting Fit
+plot(x=predict(triplinearModel), y= df$fare_amount,
+     xlab='Predicted Values',
+     ylab='Actual Values',
+     main='Predicted vs. Actual Values')
+abline(a=0,b=1, col="red")
+```
+
+
+
+
+
+
+
+
+
